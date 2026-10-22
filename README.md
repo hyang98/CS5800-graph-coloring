@@ -39,6 +39,15 @@ python color.py --overlay                               # counties split across 
 CLI results go to `out/<layer>_<source>/`: `edges.csv`, `graph.graphml`, `graph.json`,
 `map_<algorithm>.png`, `graph_overlay.png`, `report.json`.
 
+**Benchmark (colors and runtime for every algorithm on every graph):**
+
+```bash
+python bench.py                                   # all 8 WA map graphs -> results/colorings.csv
+python bench.py --layer county --source cb        # rerun a subset; other rows are kept
+```
+
+Columns are documented in `results/README.md`.
+
 ## How it works
 
 ### 1. Map → graph (`fetch_layer`, `build_graph`)
@@ -105,9 +114,15 @@ district. Pieces under 1 km² are ignored as slivers.
 
 ## Results so far (counties, `tiger`, `rook`)
 
+The full table is in `results/colorings.csv`.
+
 - 39 nodes, 91 edges, planar, maximum degree 8, no isolated counties.
-- Chromatic number 4. Only `smallest_last` reaches it; `largest_first`, `dsatur` and
-  `independent_set` each use 5.
+- Chromatic number 4. With reproducible labels, every heuristic uses more: `largest_first`,
+  `dsatur` and `smallest_last` use 5, and `independent_set` uses 6. Across 50 random relabelings
+  each heuristic sometimes reaches 4. On average `dsatur` (4.28) and `smallest_last` (4.38) do
+  best, while `independent_set` ranges from 4 to 6.
+- The notebook uses the raw GEOID labels, so its heuristic color counts can change from one
+  kernel restart to the next (see `results/README.md`).
 - The largest clique is only 3 (Stevens, Lincoln, Spokane). The 4th color is forced by an odd
   wheel: Snohomish surrounded by an odd cycle of 5 neighbours.
 - `cb` drops 11 water-crossing edges and isolates San Juan. `queen` adds one edge

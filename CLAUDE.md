@@ -23,6 +23,10 @@ make a narrow test set; these families show which conclusions still hold on non-
 - `wa_coloring.ipynb`: visual walkthrough. It does `import color as wc` and reuses the module's
   functions. The exception is `traced_try_k`, a copy of `_try_k` with event tracing for the
   animation; keep it in sync if `_try_k` changes.
+- `bench.py`: runs every algorithm on every graph and upserts rows into
+  `results/colorings.csv` (columns documented in `results/README.md`). The results CSV is the
+  source of truth for reported numbers. New graph families (Rome, BA) should be added as another
+  generator next to `map_graphs` that yields `(G, meta)` with its own `family`.
 - `data/`: Census shapefile cache (downloaded, about 90 MB). Don't commit it.
 - `out/`: CLI outputs per `<layer>_<source>`.
 
@@ -31,6 +35,10 @@ Run from this folder: `DATA_DIR` and `out/` are relative paths. Needs `geopandas
 
 ## Conventions
 
+- networkx's `smallest_last` and `independent_set` break ties by set iteration, so with string
+  node IDs their color counts change with Python's hash seed. Relabel to integers before
+  reporting numbers (`bench.py` does this), and report the spread over random relabelings
+  rather than a single run.
 - Every coloring must pass `is_proper(G, coloring) == []` before results are reported.
 - When reporting colors used, also report the chromatic number from `exact_coloring`. Heuristics
   are judged against it.
