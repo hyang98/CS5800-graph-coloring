@@ -1,18 +1,19 @@
 """
-Washington map -> adjacency graph -> graph coloring -> compare with a real map.
+State map -> adjacency graph -> graph coloring -> compare with a real map.
 
+States: WA, CA, TX (add more to STATES)
 Layers
-  county : 39 WA counties
-  cd     : 10 WA congressional districts (119th Congress, 2021 commission map)
+  county : counties (WA 39, CA 58, TX 254)
+  cd     : congressional districts, 119th Congress (WA 10, CA 52, TX 38)
 
 Usage
   pip install geopandas networkx matplotlib requests
-  python wa_map_coloring.py --layer county --source tiger
-  python wa_map_coloring.py --layer cd --source cb
-  python wa_map_coloring.py --layer county --reference ref_colors.json
-  python wa_map_coloring.py --overlay          # which counties are split across districts
+  python color.py --layer county --source tiger
+  python color.py --state TX --layer cd --source cb
+  python color.py --layer county --reference ref_colors.json
+  python color.py --overlay          # which counties are split across districts
 
-Outputs go to ./out/<layer>_<source>/ :
+Outputs go to ./out/<state>_<layer>_<source>/ :
   edges.csv, graph.graphml, graph.json, map_<algo>.png, graph_overlay.png, report.json
 """
 
@@ -23,7 +24,7 @@ from pathlib import Path
 
 import networkx as nx
 
-WA_FIPS = "53"
+STATES = {"WA": "53", "CA": "06", "TX": "48"}
 DATA_DIR = Path("data")
 
 # "tiger" = TIGER/Line: full legal boundaries, extends into water (Puget Sound,
@@ -39,7 +40,7 @@ SOURCES = {
         "name_col": "NAME",
     },
     "cd": {
-        "tiger": "https://www2.census.gov/geo/tiger/TIGER2024/CD/tl_2024_53_cd119.zip",
+        "tiger": "https://www2.census.gov/geo/tiger/TIGER2024/CD/tl_2024_{fips}_cd119.zip",
         "cb": "https://www2.census.gov/geo/tiger/GENZ2024/shp/cb_2024_us_cd119_500k.zip",
         "id_col": "GEOID",
         "name_col": "CD119FP",
@@ -59,11 +60,12 @@ PALETTE = ["#4C78A8", "#F58518", "#54A24B", "#E45756", "#B279A2", "#9D755D", "#7
 # ----------------------------------------------------------------------------
 # 1. Fetch
 # ----------------------------------------------------------------------------
-def fetch_layer(layer: str, source: str):
+def fetch_layer(layer: str, source: str, state: str = "WA"):
     import geopandas as gpd
     import requests
 
-    url = SOURCES[layer][source]
+    fips = STATES[state]
+    url = SOURCES[layer][source].format(fips=fips)
     DATA_DIR.mkdir(exist_ok=True)
     local = DATA_DIR / Path(url).name
     if not local.exists():
@@ -72,7 +74,7 @@ def fetch_layer(layer: str, source: str):
         r.raise_for_status()
         local.write_bytes(r.content)
     gdf = gpd.read_file(local)
-    gdf = gdf[gdf["STATEFP"] == WA_FIPS].copy()
+    gdf = gdf[gdf["STATEFP"] == fips].copy()
     if layer == "cd":
         gdf = gdf[gdf["CD119FP"] != "ZZ"]
         gdf["CD119FP"] = "CD-" + gdf["CD119FP"].astype(str).str.lstrip("0")
@@ -111,6 +113,17 @@ def build_graph(gdf, id_col, name_col, mode="rook", min_shared_m=100.0, snap_m=0
             if mode == "queen" or length >= min_shared_m:
                 G.add_edge(ids[i], ids[j], shared_km=round(length / 1000, 3))
     return G
+
+
+def integer_labels(G):
+    """
+    Relabel nodes 0..n-1 in sorted-id order, keeping the original id in the 'geoid' attribute.
+    networkx breaks some ties (smallest_last, independent_set) by iterating sets, and string ids
+    hash differently in every Python process, so integer labels make results reproducible.
+    """
+    return nx.convert_node_labels_to_integers(
+        G, ordering="sorted", label_attribute="geoid"
+    )
 
 
 def export_graph(G, outdir: Path):
@@ -179,6 +192,62 @@ def _try_k(G, k):
         return False
 
     return dict(colors) if rec() else None
+
+
+def sat_coloring(G, solver="glucose4", time_limit=None):
+    """Minimum coloring by SAT, as an independent cross-check of `exact_coloring`.
+
+    For k = (max clique size), k+1, ...: variable x[v,c] means "v gets color c";
+    clauses: every v gets at least one color, adjacent nodes never share a color.
+    (At-most-one is unnecessary: any true color of v is a valid choice.)
+    Symmetry breaking: one maximum clique is pinned to colors 0..q-1.
+    `time_limit` (seconds, whole search) raises TimeoutError when exceeded. It relies on
+    `Solver.interrupt()`, which Glucose honors but python-sat's CaDiCaL ignores.
+    """
+    import threading
+    import time
+
+    from pysat.solvers import Solver
+
+    if G.number_of_nodes() == 0:
+        return {}, 0
+    clique = max(nx.find_cliques(G), key=len)
+    nodes = list(G)
+    deadline = None if time_limit is None else time.monotonic() + time_limit
+
+    for k in range(len(clique), len(nodes) + 1):
+        var = {(v, c): i * k + c + 1 for i, v in enumerate(nodes) for c in range(k)}
+        with Solver(name=solver) as s:
+            for v in nodes:
+                s.add_clause([var[v, c] for c in range(k)])
+            for u, w in G.edges:
+                for c in range(k):
+                    s.add_clause([-var[u, c], -var[w, c]])
+            for c, v in enumerate(clique):
+                s.add_clause([var[v, c]])
+
+            if deadline is None:
+                sat = s.solve()
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(f"sat_coloring: time limit at k={k}")
+                timer = threading.Timer(remaining, s.interrupt)
+                timer.start()
+                try:
+                    sat = s.solve_limited(expect_interrupt=True)
+                finally:
+                    timer.cancel()
+                if sat is None:
+                    raise TimeoutError(f"sat_coloring: time limit at k={k}")
+
+            if sat:
+                true = {lit for lit in s.get_model() if lit > 0}
+                coloring = {
+                    v: next(c for c in range(k) if var[v, c] in true) for v in nodes
+                }
+                return coloring, k
+    raise RuntimeError("unreachable")
 
 
 def canonical_partition(coloring):
@@ -283,11 +352,11 @@ def draw_overlay(gdf, G, coloring, path):
 # ----------------------------------------------------------------------------
 # 6. County x district overlay
 # ----------------------------------------------------------------------------
-def county_district_overlay(source, min_area_km2=1.0):
+def county_district_overlay(source, state="WA", min_area_km2=1.0):
     import geopandas as gpd
 
-    counties = fetch_layer("county", source)[["NAME", "geometry"]]
-    cds = fetch_layer("cd", source)[["CD119FP", "geometry"]]
+    counties = fetch_layer("county", source, state)[["NAME", "geometry"]]
+    cds = fetch_layer("cd", source, state)[["CD119FP", "geometry"]]
     pieces = gpd.overlay(counties, cds, how="intersection", keep_geom_type=True)
     pieces["km2"] = pieces.area / 1e6
     pieces = pieces[pieces["km2"] >= min_area_km2]
@@ -298,6 +367,7 @@ def county_district_overlay(source, min_area_km2=1.0):
 # ----------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--state", choices=sorted(STATES), default="WA")
     ap.add_argument("--layer", choices=["county", "cd"], default="county")
     ap.add_argument("--source", choices=["tiger", "cb"], default="tiger")
     ap.add_argument("--mode", choices=["rook", "queen"], default="rook")
@@ -308,15 +378,15 @@ def main():
     args = ap.parse_args()
 
     if args.overlay:
-        print(json.dumps(county_district_overlay(args.source), indent=1))
+        print(json.dumps(county_district_overlay(args.source, args.state), indent=1))
         return
 
     cfg = SOURCES[args.layer]
-    gdf = fetch_layer(args.layer, args.source)
+    gdf = fetch_layer(args.layer, args.source, args.state)
     G = build_graph(
         gdf, cfg["id_col"], cfg["name_col"], args.mode, args.min_shared_m, args.snap_m
     )
-    outdir = Path("out") / f"{args.layer}_{args.source}"
+    outdir = Path("out") / f"{args.state.lower()}_{args.layer}_{args.source}"
     export_graph(G, outdir)
 
     results = {}
@@ -324,6 +394,9 @@ def main():
         results[name] = {"coloring": col, "k": len(set(col.values()))}
     col, k = exact_coloring(G)
     results["exact"] = {"coloring": col, "k": k}
+    col, k_sat = sat_coloring(G)
+    results["sat"] = {"coloring": col, "k": k_sat}
+    assert k_sat == k, f"exact says chi={k}, SAT says chi={k_sat}"
 
     report = {
         "nodes": G.number_of_nodes(),
@@ -339,7 +412,7 @@ def main():
             gdf,
             cfg["id_col"],
             r["coloring"],
-            f"WA {args.layer} — {a} ({r['k']} colors)",
+            f"{args.state} {args.layer} — {a} ({r['k']} colors)",
             outdir / f"map_{a}.png",
         )
     draw_overlay(gdf, G, results["exact"]["coloring"], outdir / "graph_overlay.png")
