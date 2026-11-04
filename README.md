@@ -1,8 +1,10 @@
 # Map coloring on US state maps
 
 Turns a real map into a graph and colors it with several algorithms, so their results can be
-compared on the same input. Three states and two layers are supported (Census TIGER/Line or
-Cartographic Boundary files, 2024):
+compared on the same input. Three states (WA, CA, TX) have notebooks and both layers (Census
+TIGER/Line or Cartographic Boundary files, 2024). County maps of all 50 states, DC and Puerto
+Rico are benchmarked as well, using both the Census County Adjacency File and TIGER geometry (see
+`results/county_analysis.md`):
 
 | state | `county` | `cd` (119th Congress districts) |
 |-------|----------|---------------------------------|
@@ -19,9 +21,10 @@ in `utils/make_notebooks.py`.
 utils/
   color.py            pipeline: map -> graph -> colorings, plus the CLI
   bench.py            runs every algorithm on every graph -> results/colorings.csv
+  graph_metrics.py    structure + search-effort metrics per county graph, figures
   make_notebooks.py   template that generates the state notebooks
-stateNotebooks/       wa_coloring.ipynb, ca_coloring.ipynb, tx_coloring.ipynb (generated)
-results/              colorings.csv and its column docs (README.md)
+stateNotebooks/       wa_, ca_, tx_coloring.ipynb + rome_ba_coloring.ipynb (generated)
+results/              colorings.csv, county_metrics.csv, county_analysis.md, figures/, column docs
 data/                 Census shapefile cache (downloaded, gitignored)
 out/                  CLI outputs (created on first run)
 ```
@@ -73,7 +76,20 @@ CLI results go to `out/<state>_<layer>_<source>/`: `edges.csv`, `graph.graphml`,
 ```bash
 python -m utils.bench --state WA CA TX            # 24 map graphs -> results/colorings.csv (~30 s)
 python -m utils.bench --state TX --layer county   # rerun a subset; other rows are kept
+
+# counties of all 50 states + DC + PR: Census adjacency graph + TIGER rook graph (~3 min)
+python -m utils.bench --state all --layer county --source tiger --mode rook --census
+python -m utils.graph_metrics                     # metrics, correlations, figures (~2.5 min)
+
+# 1000 Rome graphs (same sample as ../GraphColoring) + 30 Barabasi-Albert graphs, m=3 (~8 min)
+python -m utils.bench --no-maps --rome 1000 --ba-n 50 100 200 500 1000 2000 --ba-m 3 --ba-seeds 5 --repeats 5 --orders 10
+python -m utils.graph_metrics --family rome
+python -m utils.graph_metrics --family ba --probe-limit 10
+python -m utils.make_notebooks families           # stateNotebooks/rome_ba_coloring.ipynb
 ```
+
+`exact` and `sat` run under `--exact-time-limit` (default 60 s); a run that hits it is recorded
+with `status=timeout`. On the full sweep that happened once: `exact` on Kentucky's rook graph.
 
 Columns are documented in `results/README.md`.
 
@@ -97,6 +113,9 @@ Two choices change the graph:
     touch their neighbours across Puget Sound.
   - `cb`: boundaries clipped to the shoreline. Water-only borders disappear, and San Juan becomes
     an isolated node.
+  - `census` (county layer, bench only): the Census County Adjacency File
+    (`census_county_graph`). Census counts any contact, including a single point, and includes
+    boundaries in water. For all 52 county maps it equals `tiger` + `queen` edge for edge.
 
 `--snap-m` buffers every polygon slightly first, which closes small gaps left by digitizing.
 
@@ -179,3 +198,31 @@ brackets:
   Panhandle grid) and pushes heuristics up (`smallest_last` 4 → 5, `largest_first` 5 → 6). The
   chromatic number stays 4 everywhere.
 - Counties split by district lines: 7 of 39 in WA, 27 of 58 in CA, 30 of 254 in TX.
+
+**All states** (details in `results/county_analysis.md`):
+
+- **χ:** 4 on 45 of 52 county maps under either rule.
+  - Under the Census (queen) rule, Florida needs 5: five counties meet at one point in Lake
+    Okeechobee, which makes a K5.
+  - 25 of the 52 Census graphs are non-planar. Under rook only Louisiana is, because St. Martin
+    Parish has two separate pieces.
+- **Quality:** `smallest_last` reaches χ on 50 of 52 maps under the Census rule and 51 of 52 under
+  rook. `dsatur` misses on 7–10 maps, and `largest_first` and `independent_set` miss on most.
+- **Runtime:**
+  - largest_first and smallest_last grow about linearly in n.
+  - networkx's dsatur and independent_set grow about quadratically.
+  - `exact` grows as search-tree nodes × n. The tree is usually about n nodes, but with a heavy
+    tail: Kentucky timed out, and Missouri took 18k nodes.
+  - `sat` stays near 1–3 ms throughout.
+
+**Rome and Barabási–Albert graphs** (details in `results/rome_ba_analysis.md`, interactive in
+`stateNotebooks/rome_ba_coloring.ipynb`):
+
+- **Planarity:** 70% of Rome graphs are non-planar, yet they are the easiest family (mean
+  degree 2.6, χ = 3 on 95%). Non-planar Rome graphs miss χ more often with the weaker heuristics,
+  but once size and density are accounted for, planarity has no significant effect
+  (`largest_first` p = 0.40, `independent_set` p = 0.96). Density is what matters.
+- **BA graphs (m = 3):** ω = χ = 4 on every graph, and `exact` never backtracks. The hubs break
+  `independent_set` (up to 10 colors at n = 2000) and `largest_first` (misses 87%). At n = 2000
+  the quadratic algorithms (`dsatur`, `exact`, `independent_set`) take 1–2.5 s; `smallest_last`
+  takes 8.5 ms and `sat` 18 ms.

@@ -24,8 +24,26 @@ from pathlib import Path
 
 import networkx as nx
 
-STATES = {"WA": "53", "CA": "06", "TX": "48"}
+# 50 states + DC + Puerto Rico (abbr -> FIPS). WA, CA, TX are the notebook case studies.
+STATES = {
+    "AL": "01", "AK": "02", "AZ": "04", "AR": "05", "CA": "06", "CO": "08", "CT": "09",
+    "DE": "10", "DC": "11", "FL": "12", "GA": "13", "HI": "15", "ID": "16", "IL": "17",
+    "IN": "18", "IA": "19", "KS": "20", "KY": "21", "LA": "22", "ME": "23", "MD": "24",
+    "MA": "25", "MI": "26", "MN": "27", "MS": "28", "MO": "29", "MT": "30", "NE": "31",
+    "NV": "32", "NH": "33", "NJ": "34", "NM": "35", "NY": "36", "NC": "37", "ND": "38",
+    "OH": "39", "OK": "40", "OR": "41", "PA": "42", "RI": "44", "SC": "45", "SD": "46",
+    "TN": "47", "TX": "48", "UT": "49", "VT": "50", "VA": "51", "WA": "53", "WV": "54",
+    "WI": "55", "WY": "56", "PR": "72",
+}  # fmt: skip
 DATA_DIR = Path("data")
+
+# Census County Adjacency File, 2024 vintage to match the TIGER2024 shapefiles. Census counts
+# counties as adjacent if they share an edge or a single point, including boundaries in water,
+# so it equals build_graph(tiger, mode="queen"). Pipe-delimited, header row, both directions,
+# one self row per county.
+CENSUS_ADJ_URL = (
+    "https://www2.census.gov/geo/docs/reference/county_adjacency/county_adjacency2024.txt"
+)
 
 # "tiger" = TIGER/Line: full legal boundaries, extends into water (Puget Sound,
 #           Columbia River). Island counties touch their neighbours across water.
@@ -80,6 +98,35 @@ def fetch_layer(layer: str, source: str, state: str = "WA"):
         gdf["CD119FP"] = "CD-" + gdf["CD119FP"].astype(str).str.lstrip("0")
     # Equal-area projection in metres so shared-border lengths are meaningful
     return gdf.to_crs(5070).reset_index(drop=True)
+
+
+def census_county_graph(state: str):
+    """County adjacency graph for one state, straight from the Census adjacency file.
+
+    Nodes are GEOIDs with a `name` attribute; only within-state pairs become edges, so a county
+    whose only neighbours are across the state line is an isolated node. No geometry, so no x/y.
+    """
+    import pandas as pd
+    import requests
+
+    DATA_DIR.mkdir(exist_ok=True)
+    local = DATA_DIR / Path(CENSUS_ADJ_URL).name
+    if not local.exists():
+        print(f"Downloading {CENSUS_ADJ_URL}")
+        r = requests.get(CENSUS_ADJ_URL, timeout=120)
+        r.raise_for_status()
+        local.write_bytes(r.content)
+    df = pd.read_csv(local, sep="|", dtype=str, encoding="utf-8")
+    df.columns = ["name", "geoid", "nname", "ngeoid"]
+    fips = STATES[state]
+    df = df[df["geoid"].str[:2] == fips]
+
+    G = nx.Graph()
+    for geoid, name in zip(df["geoid"], df["name"]):
+        G.add_node(geoid, name=name.rsplit(",", 1)[0])
+    inner = df[(df["ngeoid"].str[:2] == fips) & (df["geoid"] != df["ngeoid"])]
+    G.add_edges_from(zip(inner["geoid"], inner["ngeoid"]))
+    return G
 
 
 # ----------------------------------------------------------------------------
@@ -150,19 +197,43 @@ def heuristic_colorings(G):
     return {name: nx.greedy_color(G, strategy=s) for name, s in ALGORITHMS.items()}
 
 
-def exact_coloring(G):
-    """Minimum coloring by DSatur-ordered backtracking. Fine for maps (< ~200 nodes, planar)."""
+def exact_coloring(G, time_limit=None, stats=None):
+    """Minimum coloring by DSatur-ordered backtracking. Fine for maps (< ~250 nodes, planar).
+
+    time_limit: seconds for the whole search; raises TimeoutError when exceeded.
+    stats: optional dict; gets stats["nodes"][k] = search-tree nodes visited while trying k
+           (a deterministic measure of effort, unlike wall time).
+    """
+    import sys
+    import time
+
     if G.number_of_nodes() == 0:
         return {}, 0
+    deadline = None if time_limit is None else time.monotonic() + time_limit
     lower = max(len(c) for c in nx.find_cliques(G))
-    for k in range(lower, G.number_of_nodes() + 1):
-        sol = _try_k(G, k)
-        if sol is not None:
-            return sol, k
+    # The search recurses once per colored vertex; graphs with ~1000+ nodes (BA) exceed the
+    # default limit of 1000 frames.
+    old_limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(max(old_limit, G.number_of_nodes() + 200))
+    try:
+        for k in range(lower, G.number_of_nodes() + 1):
+            counter = [0]
+            try:
+                sol = _try_k(G, k, deadline, counter)
+            finally:
+                if stats is not None:
+                    stats.setdefault("nodes", {})[k] = counter[0]
+            if sol is not None:
+                return sol, k
+    finally:
+        sys.setrecursionlimit(old_limit)
     raise RuntimeError("unreachable")
 
 
-def _try_k(G, k):
+def _try_k(G, k, deadline=None, counter=None):
+    # utils/make_notebooks.py has a traced copy (traced_try_k); it must make the same choices.
+    import time
+
     colors = {}
 
     def pick():
@@ -177,6 +248,10 @@ def _try_k(G, k):
         return best
 
     def rec():
+        if counter is not None:
+            counter[0] += 1
+            if deadline is not None and counter[0] % 1024 == 0 and time.monotonic() > deadline:
+                raise TimeoutError(f"exact_coloring: time limit at k={k}")
         v = pick()
         if v is None:
             return True
@@ -194,7 +269,7 @@ def _try_k(G, k):
     return dict(colors) if rec() else None
 
 
-def sat_coloring(G, solver="glucose4", time_limit=None):
+def sat_coloring(G, solver="glucose4", time_limit=None, stats=None):
     """Minimum coloring by SAT, as an independent cross-check of `exact_coloring`.
 
     For k = (max clique size), k+1, ...: variable x[v,c] means "v gets color c";
@@ -203,6 +278,7 @@ def sat_coloring(G, solver="glucose4", time_limit=None):
     Symmetry breaking: one maximum clique is pinned to colors 0..q-1.
     `time_limit` (seconds, whole search) raises TimeoutError when exceeded. It relies on
     `Solver.interrupt()`, which Glucose honors but python-sat's CaDiCaL ignores.
+    stats: optional dict; gets stats["per_k"][k] = {clauses, answer, conflicts, decisions, ...}.
     """
     import threading
     import time
@@ -241,6 +317,12 @@ def sat_coloring(G, solver="glucose4", time_limit=None):
                 if sat is None:
                     raise TimeoutError(f"sat_coloring: time limit at k={k}")
 
+            if stats is not None:
+                stats.setdefault("per_k", {})[k] = {
+                    "clauses": s.nof_clauses(),
+                    "answer": "SAT" if sat else "UNSAT",
+                    **s.accum_stats(),
+                }
             if sat:
                 true = {lit for lit in s.get_model() if lit > 0}
                 coloring = {

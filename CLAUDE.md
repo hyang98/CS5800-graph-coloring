@@ -9,8 +9,9 @@ Each map becomes a graph (region = node, shared border = edge), and the algorith
 colors used versus the chromatic number, runtime, and sensitivity to vertex order. We also measure
 how much the result depends on how the map is turned into a graph (boundary source, adjacency rule).
 
-Washington, California and Texas are the current case studies (`STATES` in `utils/color.py`). The
-plan is to extend to more states and the national county map, then generalize beyond map graphs to
+Washington, California and Texas are the notebook case studies. `STATES` in `utils/color.py` covers
+all 50 states + DC + PR, and every state's county map is benchmarked (`results/county_analysis.md`).
+The plan is to extend to the national county map, then generalize beyond map graphs to
 **Rome graphs** and **Barabási–Albert** random graphs. Map graphs are planar and sparse, so they
 make a narrow test set; these families show which conclusions still hold on non-map graphs.
 
@@ -20,8 +21,9 @@ make a narrow test set; these families show which conclusions still hold on non-
 utils/            code (imported as the `utils` package)
   color.py        pipeline + CLI
   bench.py        benchmark -> results/colorings.csv
+  graph_metrics.py   county-graph metrics + figures -> results/county_metrics.csv, figures/
   make_notebooks.py  notebook template
-stateNotebooks/   generated wa_, ca_, tx_coloring.ipynb
+stateNotebooks/   generated wa_, ca_, tx_coloring.ipynb + rome_ba_coloring.ipynb
 results/          colorings.csv (source of truth) + README.md (column docs)
 data/             Census shapefile cache (gitignored)
 out/              CLI outputs (created on first CLI run)
@@ -29,8 +31,11 @@ out/              CLI outputs (created on first CLI run)
 
 - `utils/color.py`: the pipeline. `fetch_layer` → `build_graph` → `heuristic_colorings` /
   `exact_coloring` / `sat_coloring` → `analyze_reference`, `draw_map`, `draw_overlay`, `county_district_overlay`.
-  Every fetch takes a `state` (`"WA"`, `"CA"`, `"TX"`). `integer_labels` gives reproducible
-  node ids; use it before reporting any heuristic result.
+  Every fetch takes a `state` (any key of `STATES`). `census_county_graph(state)` builds the
+  county graph from the Census County Adjacency File (2024). It equals `build_graph(tiger,
+  mode="queen")` on all 52 county maps, so the rook default is a deliberate departure from Census:
+  it drops corner contacts. `integer_labels` gives reproducible node ids; use it before reporting
+  any heuristic result.
 - `utils/make_notebooks.py`: the single template that generates the notebooks in
   `stateNotebooks/`. Edit the template, then regenerate; never hand-edit the generated notebooks.
   The template's `traced_try_k` is a copy of `_try_k` with event tracing; keep it in sync if
@@ -38,7 +43,8 @@ out/              CLI outputs (created on first CLI run)
 - `utils/bench.py`: runs every algorithm on every graph and upserts rows into
   `results/colorings.csv` (columns documented in `results/README.md`). The results CSV is the
   source of truth for reported numbers. New graph families (Rome, BA) should be added as another
-  generator next to `map_graphs` that yields `(G, meta)` with its own `family`.
+  generator next to `map_graphs` / `census_graphs` that yields `(G, meta)` with its own `family`.
+  `--state all` runs every state; `--census` adds the Census graphs.
 - `data/`: Census shapefile cache (downloaded, about 100 MB). Don't commit it.
 - `out/`: CLI outputs per `<state>_<layer>_<source>`.
 
@@ -65,10 +71,25 @@ also need their kernel's working directory set to the repo root. Needs `geopanda
 - Adding a state means adding its FIPS code to `STATES` (`utils/color.py`) and its name to
   `STATE_NAMES` (`utils/make_notebooks.py`).
 - `exact_coloring` runtime is heavy-tailed in the vertex labeling (TX counties: 0.02 s on most
-  relabelings, 3 s+ on some). `bench.py` therefore doesn't run it over random relabelings. Keep
-  a time limit on any new sweep that includes it.
+  relabelings, 3 s+ on some; KY rook: over 60 s on the default labeling). `bench.py` therefore
+  doesn't run it over random relabelings. Keep a time limit on any new sweep that includes it:
+  `exact_coloring(G, time_limit=..., stats=...)` raises `TimeoutError`, and `stats["nodes"][k]`
+  counts search-tree nodes. Its runtime is about 300 ns × nodes × n, and the expensive step is
+  the satisfiable k = χ, not the k = ω proof.
+- Under the Census/queen rule, map graphs are not always planar and χ can be 5 (FL, Lake
+  Okeechobee). Don't assume the 4-color bound there.
 
 ## Generalizing to Rome / Barabási–Albert
+
+Done for a first pass (`results/rome_ba_analysis.md`). `bench.py --rome N` samples Rome graphs
+exactly like `../GraphColoring/bench/run_rome.py`, through its `rome_paths()`, so both projects
+color the same 1000 graphs. `--ba-n ... --ba-m 3 --ba-seeds 5` adds BA graphs. Both are separate
+families in `colorings.csv`, `graph_metrics.py --family rome|ba` writes their metrics, and
+`make_notebooks.build_families()` generates the comparison notebook. Finding: planarity is not
+a significant predictor once density and size are controlled for. At m = 3, BA has ω = χ, so it
+doesn't stress the exact methods; denser BA graphs (m = 5–10) are the next step.
+`exact_coloring` recurses once per vertex and raises the recursion limit itself; it was needed
+for n ≥ 1000.
 
 - The sibling project `../GraphColoring/` (CS 5800) already has a graph type, algorithm contract,
   verifier, Rome loader and benchmarks. Reuse it rather than duplicating it here.
