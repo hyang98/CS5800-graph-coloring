@@ -1,9 +1,10 @@
 # Notes: requires networkx library
-# works with Python ver 3.14, possibly earlier versions as well
+# works with Python ver 3.14
 
 import networkx as nx               # networkx used for making graph
 import matplotlib.pyplot as plt     # matplotlib used for plotting data in visual graphic
 import matplotlib.image as mpimg    # used to show background image
+import time                         # for performance benchmarking
 
 
 def import_data() -> tuple[dict, list]:
@@ -123,24 +124,70 @@ def main():
         G.add_edge(edge_start, edge_end)
 
 
+    # Graph Coloring in this section ------------------------------------------
+    print("Now calculating graph coloring.....")
+
+    # these are the built-in greedy coloring strategies.  Will also accept a custom function
+    # https://networkx.org/documentation/stable/reference/algorithms/generated/networkx.algorithms.coloring.greedy_color.html
+    """
+    'largest_first'
+    'random_sequential'
+    'smallest_last'
+    'independent_set'
+    'connected_sequential_bfs'
+    'connected_sequential_dfs'
+    'connected_sequential' # (alias for the previous strategy)
+    'saturation_largest_first'
+    'DSATUR' # (alias for the previous strategy)
+    """
+
+    # Benchmarking start
+    start_time = time.perf_counter()
+
+    # Graph coloring here - select algorithm here
+    node_color_label_dict = nx.coloring.greedy_color(G, strategy='DSATUR', interchange=False)
+
+    end_time = time.perf_counter()
+
+    number_of_colors = max(node_color_label_dict.values()) + 1
+    print("Number of colors used for Map Coloring: ", number_of_colors)
+    print(f"Elapsed time in seconds: {(end_time - start_time):.4f}")
+
+
+    # maps color number labels to actual display colors for visualization
+    color_map_dict = {
+        0: "tab:red",
+        1: "tab:orange",
+        2: "tab:olive",
+        3: "tab:green",
+        4: "tab:blue",
+        5: "tab:purple",
+        6: "tab:brown",
+        7: "tab:gray",
+        8: "tab:black"
+    }
+
+    # creates a list of the actual visualization colors in the correct order
+    node_viz_colors = [color_map_dict[node_color_label_dict[node]] for node in G.nodes()]
+
 
     # Below here all about drawing & displaying graph -------------------------
     
     # visualization graphics options
     options = {
-        "font_size": 6,
-        "node_size": 250,
-        "node_color": "yellow",
-        "edgecolors": "black",
-        "linewidths": 1,
+        "font_size": 6,             # font size for labels
+        "node_size": 150,           # size of node
+        # "node_color": "yellow",   # node color (not to be used when dynamically coloring)
+        "edgecolors": "black",      
+        "linewidths": 0,            # node border line width with 0=no border
         "width": 1,
     }
 
     # draw the graph
 
     # One of the two following options should be used:
-    nx.draw_networkx(G, positions, **options)             # allows labeling nodes and more options.  Slower
-    # nx.draw(G, positions, **options)                    # simple drawing function with no node labels.  Faster
+    # nx.draw_networkx(G, positions, **options)             # allows labeling nodes and more options.  Slower
+    nx.draw(G, positions, node_color=node_viz_colors, **options)                    # simple drawing function with no node labels.  Faster
 
 
     # if we wanted to place a image in the background, this would be used -----
@@ -157,7 +204,7 @@ def main():
 
     plt.gca().set_aspect(1.2)    # sets output aspect ratio as 1:1
     # ax.margins(0.05)    # sets a margin around the plotted area
-    plt.axis(True)
+    # plt.axis(True)
     plt.show()
 
 
