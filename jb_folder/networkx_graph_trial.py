@@ -1,13 +1,23 @@
 # Notes: requires networkx library
 # works with Python ver 3.14
 
+import argparse                     # command line options
+from pathlib import Path            # builds file paths relative to this file
+
 import networkx as nx               # networkx used for making graph
 import matplotlib.pyplot as plt     # matplotlib used for plotting data in visual graphic
 import matplotlib.image as mpimg    # used to show background image
 import time                         # for performance benchmarking
 
 
-def import_data() -> tuple[dict, list]:
+# data files live in read_folder/data; paths are built from this file's location
+# so the script can be run from any directory
+DATA_DIR = Path(__file__).resolve().parent.parent / "read_folder" / "data"
+LOCATIONS_FILE = DATA_DIR / "county_locations_cleanedRL.csv"
+ADJACENCY_FILE = DATA_DIR / "county_adjacency_cleanedRL.txt"
+
+
+def import_data(verbose=False) -> tuple[dict, list]:
     """imports two files, returns a tuple: dict of locations, list of adjacencies"""
 
     # in order to filter counties to the continental US, the following min / max values are used
@@ -22,91 +32,86 @@ def import_data() -> tuple[dict, list]:
     # Import county names and location data (lat and long) from file ------------------------------
     # This represents Nodes on a graph
     county_locations = {}
-    county_loc_file = open('./data/county_locations_cleanedRL.csv', 'r')
-    co_loc_header = next(county_loc_file)       # skips first line
+    with open(LOCATIONS_FILE, 'r') as county_loc_file:
+        co_loc_header = next(county_loc_file)       # skips first line
 
-    line_number = 0
-    for line in county_loc_file:
-        fips_code, name, longitude, latitude = line.strip().split(",")
+        line_number = 0
+        for line in county_loc_file:
+            fips_code, name, longitude, latitude = line.strip().split(",")
 
-        # filters out counties outside of continental US
-        if MIN_LONG < float(longitude) < MAX_LONG and MIN_LAT < float(latitude) < MAX_LAT:
-            county_locations[fips_code] = {
-                "fips_code": fips_code,
-                "county_name": name,
-                "longitude": longitude,
-                "latitude": latitude
-            }
-        line_number += 1
+            # filters out counties outside of continental US
+            if MIN_LONG < float(longitude) < MAX_LONG and MIN_LAT < float(latitude) < MAX_LAT:
+                county_locations[fips_code] = {
+                    "fips_code": fips_code,
+                    "county_name": name,
+                    "longitude": longitude,
+                    "latitude": latitude
+                }
+            line_number += 1
 
-    county_loc_file.close()
-    print("location file counties imported: ", line_number)
+    if verbose:
+        print(f"location file rows read: {line_number}, kept (continental US): {len(county_locations)}")
 
-    
+
     # Import county adjacency (neighbor borders) data from file, add lat and long info ------------
     # This represents Edges on a graph
     county_adj_data = []
-    county_adj_file = open('./data/county_adjacency_cleanedRL.txt', "r")
-    co_adj_header = next(county_adj_file)       # skips first line
+    with open(ADJACENCY_FILE, "r") as county_adj_file:
+        co_adj_header = next(county_adj_file)       # skips first line
 
-    line_number = 0
-    key_errors = 0
-    for line in county_adj_file: 
-        county_name, county_geoid, neighbor_name, neighbor_geoid, border_length = line.strip().split("|")
+        line_number = 0
+        key_errors = 0
+        for line in county_adj_file:
+            county_name, county_geoid, neighbor_name, neighbor_geoid, border_length = line.strip().split("|")
 
-        county_lat = "25"       # these are sentinel values to show when the data is not present
-        county_long = "-66"     # sentinel value
-        # There could be GEOIDs missing from the location data file
-        # If not there, this avoids error
-        try:
-            county_lat = county_locations[county_geoid]["latitude"]
-            county_long = county_locations[county_geoid]["longitude"]
-        except KeyError as e:
-            # KeyError occurs when a Geoid (FIPS code) is in the Adj file but not in the location file
-            key_errors += 1
-            print(f"KeyError: {e} County Geoid from Adj file not found in lat/long file")
-        else:
-            # this runs only if the try block succeeds
-            county_adj_data.append({
-                "co_name":  county_name,
-                "co_geoid": county_geoid,
-                "co_lat":   county_lat,
-                "co_long":  county_long,
-                "neighbor_name": neighbor_name,
-                "neighbor_geoid": neighbor_geoid,
-                "border_length": border_length
-            })
+            county_lat = "25"       # these are sentinel values to show when the data is not present
+            county_long = "-66"     # sentinel value
+            # There could be GEOIDs missing from the location data file
+            # If not there, this avoids error
+            try:
+                county_lat = county_locations[county_geoid]["latitude"]
+                county_long = county_locations[county_geoid]["longitude"]
+            except KeyError as e:
+                # KeyError occurs when a Geoid (FIPS code) is in the Adj file but not in the location file
+                key_errors += 1
+            else:
+                # this runs only if the try block succeeds
+                county_adj_data.append({
+                    "co_name":  county_name,
+                    "co_geoid": county_geoid,
+                    "co_lat":   county_lat,
+                    "co_long":  county_long,
+                    "neighbor_name": neighbor_name,
+                    "neighbor_geoid": neighbor_geoid,
+                    "border_length": border_length
+                })
             line_number += 1
 
-    county_adj_file.close()
-    print("Number of KeyErrors: ", key_errors)
-    print("Adjacency file counties imported: ", line_number)
+    if verbose:
+        print("Number of KeyErrors: ", key_errors)
+        print(f"Adjacency file rows read: {line_number}, kept: {len(county_adj_data)}")
 
+        # prints five example lines for each data set
+        print("Example of County Locations: ")
+        for key, value in list(county_locations.items())[:5]:
+            print(key, value)
+        # Example data:
+        # 01059 {'fips_code': '01059', 'county_name': 'Franklin', 'longitude': '-87.843283', 'latitude': '34.44238135'}
 
-    # prints five example lines for each data set
-    print("Example of County Locations: ")
-    for key, value in list(county_locations.items())[:5]:
-        print(key, value)
-    # Example data:
-    # 01059 {'fips_code': '01059', 'county_name': 'Franklin', 'longitude': '-87.843283', 'latitude': '34.44238135'}
-
-    print("Example County Adjacency Data: ")
-    for i in range(5):
-        print(county_adj_data[i])
-    # Example data:
-    # {'co_name': 'Autauga County, AL', 'co_geoid': '01001', 'co_lat': '32.53514228', 'co_long': '-86.64289976', 
-    #           'neighbor_name': 'Chilton County, AL', 'neighbor_geoid': '01021', 'border_length': '52284'}
+        print("Example County Adjacency Data: ")
+        for i in range(5):
+            print(county_adj_data[i])
+        # Example data:
+        # {'co_name': 'Autauga County, AL', 'co_geoid': '01001', 'co_lat': '32.53514228', 'co_long': '-86.64289976',
+        #           'neighbor_name': 'Chilton County, AL', 'neighbor_geoid': '01021', 'border_length': '52284'}
 
     return county_locations, county_adj_data
 
 
-
-def main():
+def build_graph(county_locations, county_adj_data):
+    """returns a tuple: the graph, and a dict of node positions (long, lat)"""
     # create empty graph
     G = nx.Graph()
-
-    # import data from files
-    county_locations, county_adj_data = import_data()
 
     # Create graph nodes (each county) and node positions (lat & long) --------
     positions = {}
@@ -123,9 +128,17 @@ def main():
         edge_end = border['neighbor_geoid']
         G.add_edge(edge_start, edge_end)
 
+    return G, positions
 
-    # Graph Coloring in this section ------------------------------------------
-    print("Now calculating graph coloring.....")
+
+def load_county_graph(verbose=False):
+    """imports the data files and builds the county graph, returns (G, positions)"""
+    county_locations, county_adj_data = import_data(verbose)
+    return build_graph(county_locations, county_adj_data)
+
+
+def color_graph(G, strategy="DSATUR") -> dict:
+    """returns a dict that maps each node to a color number (0, 1, 2, ...)"""
 
     # these are the built-in greedy coloring strategies.  Will also accept a custom function
     # https://networkx.org/documentation/stable/reference/algorithms/generated/networkx.algorithms.coloring.greedy_color.html
@@ -140,45 +153,55 @@ def main():
     'saturation_largest_first'
     'DSATUR' # (alias for the previous strategy)
     """
-
-    # Benchmarking start
-    start_time = time.perf_counter()
-
-    # Graph coloring here - select algorithm here
-    node_color_label_dict = nx.coloring.greedy_color(G, strategy='DSATUR', interchange=False)
-
-    end_time = time.perf_counter()
-
-    number_of_colors = max(node_color_label_dict.values()) + 1
-    print("Number of colors used for Map Coloring: ", number_of_colors)
-    print(f"Elapsed time in seconds: {(end_time - start_time):.4f}")
+    return nx.coloring.greedy_color(G, strategy=strategy, interchange=False)
 
 
-    # maps color number labels to actual display colors for visualization
-    color_map_dict = {
-        0: "tab:red",
-        1: "tab:orange",
-        2: "tab:olive",
-        3: "tab:green",
-        4: "tab:blue",
-        5: "tab:purple",
-        6: "tab:brown",
-        7: "tab:gray",
-        8: "tab:black"
-    }
+def num_colors(coloring) -> int:
+    """number of colors used (color numbers start at 0)"""
+    return max(coloring.values()) + 1 if coloring else 0
 
+
+def validate_coloring(G, coloring) -> bool:
+    """True if every node has a color and no edge connects two nodes of the same color"""
+    if any(node not in coloring for node in G.nodes()):
+        return False
+    return all(coloring[u] != coloring[v] for u, v in G.edges())
+
+
+def graph_stats(G) -> dict:
+    """basic size numbers for a graph"""
+    return {"nodes": G.number_of_nodes(), "edges": G.number_of_edges()}
+
+
+# maps color number labels to actual display colors for visualization
+color_map_dict = {
+    0: "tab:red",
+    1: "tab:orange",
+    2: "tab:olive",
+    3: "tab:green",
+    4: "tab:blue",
+    5: "tab:purple",
+    6: "tab:brown",
+    7: "tab:gray",
+    8: "black"
+}
+
+
+def draw_graph(G, positions, coloring):
     # creates a list of the actual visualization colors in the correct order
-    node_viz_colors = [color_map_dict[node_color_label_dict[node]] for node in G.nodes()]
+    # (the modulo reuses colors if there are more color numbers than display colors)
+    display_colors = list(color_map_dict.values())
+    node_viz_colors = [display_colors[coloring[node] % len(display_colors)] for node in G.nodes()]
 
 
     # Below here all about drawing & displaying graph -------------------------
-    
+
     # visualization graphics options
     options = {
         "font_size": 6,             # font size for labels
         "node_size": 150,           # size of node
         # "node_color": "yellow",   # node color (not to be used when dynamically coloring)
-        "edgecolors": "black",      
+        "edgecolors": "black",
         "linewidths": 0,            # node border line width with 0=no border
         "width": 1,
     }
@@ -192,7 +215,7 @@ def main():
 
     # if we wanted to place a image in the background, this would be used -----
     # load image from file for background
-    # image = mpimg.imread('./images/background_image.jpg')    
+    # image = mpimg.imread('./images/background_image.jpg')
 
     # x_right = -73.70878
     # y_top = 40.92133
@@ -208,5 +231,35 @@ def main():
     plt.show()
 
 
-main()
+def main():
+    parser = argparse.ArgumentParser(description="Color the US county adjacency graph")
+    parser.add_argument("--strategy", default="DSATUR", help="networkx greedy_color strategy")
+    parser.add_argument("--no-plot", action="store_true", help="skip drawing the graph")
+    args = parser.parse_args()
 
+    # import data from files and create the graph
+    G, positions = load_county_graph(verbose=True)
+    print("Graph:", graph_stats(G))
+
+
+    # Graph Coloring in this section ------------------------------------------
+    print("Now calculating graph coloring.....")
+
+    # Benchmarking start
+    start_time = time.perf_counter()
+
+    # Graph coloring here - select algorithm with --strategy
+    node_color_label_dict = color_graph(G, args.strategy)
+
+    end_time = time.perf_counter()
+
+    print("Number of colors used for Map Coloring: ", num_colors(node_color_label_dict))
+    print("Coloring is valid: ", validate_coloring(G, node_color_label_dict))
+    print(f"Elapsed time in seconds: {(end_time - start_time):.4f}")
+
+    if not args.no_plot:
+        draw_graph(G, positions, node_color_label_dict)
+
+
+if __name__ == "__main__":
+    main()
