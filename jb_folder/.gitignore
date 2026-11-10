@@ -1,0 +1,4 @@
+__pycache__/
+figures/*.png
+figures/cache/
+data/geo/
