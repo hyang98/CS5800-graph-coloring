@@ -50,6 +50,24 @@
     <div class="kpis" id="kpis"></div>
   </section>
 
+  <section id="mapsSec">
+    <div class="sec-h"><h2>Maps</h2>
+      <label class="inline muted">Implementation
+        <select id="mapImpl"><option value="networkx">networkx</option><option value="local">local</option></select>
+      </label>
+    </div>
+    <p class="muted small" id="mapsNote">County colorings drawn on a US map. Click a map to enlarge.</p>
+    <div class="maps" id="maps"></div>
+  </section>
+
+  <dialog id="lightbox" aria-labelledby="lbTitle">
+    <div class="lb-bar">
+      <strong id="lbTitle"></strong>
+      <span class="lb-actions"><a class="btn" id="lbDownload" download>Download PNG</a><button class="btn" id="lbClose" type="button" aria-label="Close">Close</button></span>
+    </div>
+    <div class="lb-img"><img id="lbImg" alt=""></div>
+  </dialog>
+
   <div class="toolbar card slim">
     <label class="inline"><input type="checkbox" id="logToggle" checked> Log time axis</label>
     <label class="inline">Impl filter

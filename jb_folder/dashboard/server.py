@@ -3,7 +3,8 @@
 Usage: python dashboard/server.py [--port 8765] [--host 127.0.0.1]
 
 Endpoints: GET / , GET /api/history, POST /api/run, GET /api/status,
-DELETE /api/history/<run_id>, GET /api/export.csv
+DELETE /api/history/<run_id>, GET /api/export.csv,
+GET /api/map.png?algorithm=&impl= , GET /api/map-info?algorithm=&impl=
 """
 
 import argparse
@@ -19,13 +20,19 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+
+import matplotlib
+matplotlib.use("Agg")  # must precede any pyplot import: GUI backends crash off the main thread
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import benchmark  # noqa: E402
+import networkx_graph_trial as coloring_mod  # noqa: E402
 from benchmark import ALGORITHM_NAMES  # noqa: E402
 from networkx_graph_trial import load_county_graph  # noqa: E402
+from visualize_map import draw_county_map  # noqa: E402
 
 STATIC = (Path(__file__).resolve().parent / "static").resolve()
 MIME = {".html": "text/html; charset=utf-8", ".js": "application/javascript; charset=utf-8",
@@ -37,6 +44,76 @@ LOCK = threading.Lock()          # guards STATE and history file writes
 STATE = {"busy": False, "job_id": None, "started": None,
          "progress": {"message": "", "done_steps": 0, "total_steps": 0, "current_algorithm": None},
          "last_error": None, "last_record_id": None}
+
+# ---- county maps -------------------------------------------------------------
+# Colorings are deterministic within one process (independent_set may differ across
+# processes via string-hash randomization), so results are cached per process: in memory
+# (PNG bytes + info) and on disk under figures/cache/. The disk cache is cleared at server
+# start so images from a different process are never served.
+CACHE_DIR = ROOT / "figures" / "cache"
+TITLES = {"welsh_powell": "Welsh-Powell", "dsatur": "DSATUR", "smallest_last": "Smallest-last",
+          "independent_set": "Independent set"}
+IMPLS = ("networkx", "local")
+MAP_LOCK = threading.Lock()      # serializes coloring + matplotlib rendering (not thread-safe)
+MAP_CACHE = {}                   # (algorithm, impl) -> {"png": bytes, "info": dict}
+MAP_ACTIVE = 0                   # renders in progress; guarded by LOCK; blocks starting a benchmark
+
+
+class MapPaused(Exception):
+    pass
+
+
+def get_map(algorithm, impl):
+    """Return cached {"png", "info"}; compute if needed. Raises MapPaused if a benchmark runs."""
+    global MAP_ACTIVE
+    key = (algorithm, impl)
+    hit = MAP_CACHE.get(key)
+    if hit:
+        return hit
+    with MAP_LOCK:
+        hit = MAP_CACHE.get(key)
+        if hit:
+            return hit
+        with LOCK:  # computing now would distort a running benchmark
+            if STATE["busy"]:
+                raise MapPaused()
+            MAP_ACTIVE += 1
+        try:
+            t0 = time.perf_counter()
+            col = coloring_mod.color_graph(GRAPH, algorithm, impl)
+            n = coloring_mod.num_colors(col)
+            counts = {}
+            for c in col.values():
+                counts[int(c)] = counts.get(int(c), 0) + 1
+            valid = bool(coloring_mod.validate_coloring(GRAPH, col))
+            path = CACHE_DIR / f"{algorithm}_{impl}.png"
+            tmp = CACHE_DIR / f".{algorithm}_{impl}.tmp.png"
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            t1 = time.perf_counter()
+            draw_county_map(col, title=f"{TITLES[algorithm]} ({impl}): {n} colors",
+                            output_path=str(tmp), show=False)
+            os.replace(tmp, path)
+            entry = {"png": path.read_bytes(),
+                     "info": {"algorithm": algorithm, "impl": impl, "colors": n, "valid": valid,
+                              "color_counts": {str(k): counts[k] for k in sorted(counts)},
+                              "color_s": round(t1 - t0, 3), "render_s": round(time.perf_counter() - t1, 3)}}
+            MAP_CACHE[key] = entry
+            return entry
+        finally:
+            with LOCK:
+                MAP_ACTIVE -= 1
+
+
+def parse_map_query(path):
+    q = parse_qs(urlsplit(path).query)
+    alg = (q.get("algorithm") or [""])[0]
+    impl = (q.get("impl") or ["networkx"])[0]
+    if alg not in ALGORITHM_NAMES:
+        raise ValueError(f"algorithm must be one of {list(ALGORITHM_NAMES)}")
+    if impl not in IMPLS:
+        raise ValueError("impl must be 'networkx' or 'local'")
+    return alg, impl
+
 
 def _job(job_id, algs, impl, runs, warmup, notes):
     total = (warmup + runs) * len(algs)
@@ -162,6 +239,22 @@ class Handler(BaseHTTPRequestHandler):
                 s = {k: v for k, v in STATE.items() if k != "started"}
                 s["elapsed_s"] = time.time() - STATE["started"] if STATE["busy"] and STATE["started"] else None
                 return self._send(200, s)
+        if path in ("/api/map.png", "/api/map-info"):
+            try:
+                alg, impl = parse_map_query(self.path)
+            except ValueError as e:
+                return self._send(400, {"error": str(e)})
+            try:
+                entry = get_map(alg, impl)
+            except MapPaused:
+                return self._send(409, {"error": "Maps paused while a benchmark runs"})
+            except Exception as e:  # noqa: BLE001
+                return self._send(500, {"error": f"{type(e).__name__}: {e}"})
+            if path == "/api/map-info":
+                return self._send(200, entry["info"])
+            return self._send(200, entry["png"], "image/png",
+                              {"Cache-Control": "no-cache",
+                               "Content-Disposition": f'inline; filename="{alg}_{impl}.png"'})
         if path == "/api/export.csv":
             return self._send(200, export_csv(), "text/csv; charset=utf-8",
                               {"Content-Disposition": 'attachment; filename="benchmark_samples.csv"'})
@@ -182,6 +275,8 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK:
             if STATE["busy"]:
                 return self._send(409, {"error": "a benchmark is already running"})
+            if MAP_ACTIVE:
+                return self._send(409, {"error": "a map is rendering; try again in a few seconds"})
             job_id = uuid.uuid4().hex[:12]
             STATE.update(busy=True, job_id=job_id, started=time.time(), last_error=None)
         threading.Thread(target=_job, args=(job_id, algs, impl, runs, warmup, notes),
@@ -205,6 +300,9 @@ def main():
     a = p.parse_args()
     print("Loading county graph...", flush=True)
     GRAPH, _ = load_county_graph()
+    if CACHE_DIR.is_dir():  # drop images from earlier processes (see map notes above)
+        for f in CACHE_DIR.glob("*.png"):
+            f.unlink()
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     srv.daemon_threads = True
     print(f"Dashboard running at http://{a.host}:{a.port}/  (Ctrl+C to stop)", flush=True)

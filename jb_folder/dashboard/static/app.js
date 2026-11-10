@@ -139,6 +139,76 @@ $('histTable').addEventListener('click', async (e) => {
   if (row) { const d = $('d-' + row.dataset.id); d.hidden = !d.hidden; }
 });
 
+/* ---------- maps ---------- */
+const mapState = {}; // alg -> {url, info, title}
+let mapGen = 0, mapAbort = null, mapRetry = null;
+$('mapImpl').value = ['networkx', 'local'].includes(lsGet('mapImpl', 'networkx')) ? lsGet('mapImpl', 'networkx') : 'networkx';
+function setMapWait(a, cls, msg) {
+  const b = document.querySelector(`#map-${a} .mapimg`);
+  b.className = 'mapimg wait ' + cls; b.disabled = true; b.removeAttribute('aria-haspopup');
+  b.innerHTML = `<div class="spin"></div><div>${esc(msg)}</div>`;
+}
+function initMaps() {
+  $('maps').innerHTML = ALGS.map((a) => `
+    <div class="mapcard" id="map-${a}" style="--c:var(--c-${a})">
+      <div class="name">${algTag(a)} <span class="badge" hidden></span></div>
+      <button type="button" class="mapimg wait idle" disabled aria-label="Enlarge ${a} map"></button>
+      <div class="mapfoot" aria-live="polite"></div>
+    </div>`).join('');
+}
+function resetMaps() {
+  mapGen++; clearTimeout(mapRetry); if (mapAbort) mapAbort.abort();
+  Object.values(mapState).forEach((m) => URL.revokeObjectURL(m.url));
+  for (const k in mapState) delete mapState[k];
+  initMaps(); ALGS.forEach((a) => setMapWait(a, 'idle', 'Queued'));
+  loadMaps();
+}
+async function loadMaps() {
+  const gen = mapGen, impl = $('mapImpl').value;
+  mapAbort = new AbortController();
+  let paused = false;
+  for (const a of ALGS) { // sequential: one render at a time on the server
+    if (gen !== mapGen) return;
+    if (mapState[a]) continue;
+    const card = document.querySelector(`#map-${a}`), foot = card.querySelector('.mapfoot');
+    setMapWait(a, '', 'Rendering map…'); foot.textContent = '';
+    try {
+      const r = await fetch(`/api/map.png?algorithm=${a}&impl=${impl}`, { signal: mapAbort.signal });
+      if (r.status === 409) { paused = true; setMapWait(a, 'idle', 'Maps paused while a benchmark runs'); continue; }
+      if (!r.ok) { let m = r.statusText; try { m = (await r.json()).error || m; } catch (e) { /* none */ } throw new Error(m); }
+      const url = URL.createObjectURL(await r.blob());
+      const info = await api(`/api/map-info?algorithm=${a}&impl=${impl}`);
+      if (gen !== mapGen) { URL.revokeObjectURL(url); return; }
+      const title = `${a} (${impl}): ${info.colors} colors`;
+      mapState[a] = { url, info, title };
+      const b = card.querySelector('.mapimg');
+      b.className = 'mapimg'; b.disabled = false; b.setAttribute('aria-haspopup', 'dialog');
+      b.innerHTML = `<img src="${url}" alt="US county map colored by ${esc(a)}, ${info.colors} colors">`;
+      b.onclick = () => openLightbox(a);
+      const bd = card.querySelector('.badge'); bd.hidden = false; bd.className = 'badge' + (info.valid ? '' : ' bad'); bd.textContent = info.valid ? 'valid' : 'INVALID';
+      const cnt = Object.entries(info.color_counts).map(([c, n]) => `${c}: ${n}`).join(' · ');
+      foot.innerHTML = `<b>${info.colors} colors</b> &middot; counties per color ${esc(cnt)}`;
+    } catch (e) {
+      if (e.name === 'AbortError' || gen !== mapGen) return;
+      setMapWait(a, 'err', 'Could not load map: ' + e.message);
+    }
+  }
+  if (paused && gen === mapGen) {
+    $('mapsNote').textContent = 'Maps paused while a benchmark runs; they will load when it finishes.';
+    mapRetry = setTimeout(() => { if (gen === mapGen) loadMaps(); }, 3000);
+  } else $('mapsNote').textContent = 'County colorings drawn on a US map. Click a map to enlarge.';
+}
+function openLightbox(a) {
+  const m = mapState[a]; if (!m) return;
+  $('lbTitle').textContent = m.title; $('lbImg').src = m.url; $('lbImg').alt = 'US county map: ' + m.title;
+  $('lbDownload').href = m.url; $('lbDownload').download = `${a}_${m.info.impl}.png`;
+  $('lightbox').showModal(); // native modal: aria-modal, focus trap, Esc, restores focus on close
+  $('lbClose').focus();
+}
+$('lbClose').onclick = () => $('lightbox').close();
+$('lightbox').addEventListener('click', (e) => { if (e.target === $('lightbox')) $('lightbox').close(); });
+$('mapImpl').onchange = () => { lsSet('mapImpl', $('mapImpl').value); resetMaps(); };
+
 /* ---------- charts ---------- */
 function renderLegend() {
   $('legend').innerHTML = ALGS.map((a) => `<span class="alg"><i class="dot" style="background:var(--c-${a})"></i>${a}</span>`).join('');
@@ -198,6 +268,7 @@ $('logToggle').onchange = renderCharts;
 $('implFilter').onchange = renderCharts;
 
 renderAll();
+resetMaps();
 loadHistory().catch((e) => showError('Could not load history: ' + e.message));
 poll();
 })();
