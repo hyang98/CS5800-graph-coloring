@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt     # matplotlib used for plotting data in visua
 import matplotlib.image as mpimg    # used to show background image
 import time                         # for performance benchmarking
 
+from greedy_coloring import ALGORITHMS, NX_STRATEGY_NAMES   # our copies of 4 networkx algorithms
+
 
 # data files live in read_folder/data; paths are built from this file's location
 # so the script can be run from any directory
@@ -137,8 +139,20 @@ def load_county_graph(verbose=False):
     return build_graph(county_locations, county_adj_data)
 
 
-def color_graph(G, strategy="DSATUR") -> dict:
-    """returns a dict that maps each node to a color number (0, 1, 2, ...)"""
+def color_graph(G, strategy="dsatur", impl="networkx") -> dict:
+    """returns a dict that maps each node to a color number (0, 1, 2, ...)
+
+    impl="networkx" uses networkx's greedy_color. impl="local" uses our copies in
+    greedy_coloring/, which only know: welsh_powell, dsatur, smallest_last, independent_set
+    """
+    if impl == "local":
+        return ALGORITHMS[strategy](G)
+    if impl != "networkx":
+        raise ValueError(f"impl must be 'networkx' or 'local', not {impl!r}")
+
+    # our four names are translated to the networkx strategy names below,
+    # any other networkx strategy string is passed through unchanged
+    strategy = NX_STRATEGY_NAMES.get(strategy, strategy)
 
     # these are the built-in greedy coloring strategies.  Will also accept a custom function
     # https://networkx.org/documentation/stable/reference/algorithms/generated/networkx.algorithms.coloring.greedy_color.html
@@ -233,7 +247,10 @@ def draw_graph(G, positions, coloring):
 
 def main():
     parser = argparse.ArgumentParser(description="Color the US county adjacency graph")
-    parser.add_argument("--strategy", default="DSATUR", help="networkx greedy_color strategy")
+    parser.add_argument("--strategy", default="dsatur", help="welsh_powell, dsatur, smallest_last, "
+                        "independent_set (or any networkx strategy string with --impl networkx)")
+    parser.add_argument("--impl", choices=["networkx", "local"], default="networkx",
+                        help="networkx's code or our copies in greedy_coloring/")
     parser.add_argument("--no-plot", action="store_true", help="skip drawing the graph")
     args = parser.parse_args()
 
@@ -249,7 +266,7 @@ def main():
     start_time = time.perf_counter()
 
     # Graph coloring here - select algorithm with --strategy
-    node_color_label_dict = color_graph(G, args.strategy)
+    node_color_label_dict = color_graph(G, args.strategy, args.impl)
 
     end_time = time.perf_counter()
 
