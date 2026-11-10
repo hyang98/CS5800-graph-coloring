@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Graph Coloring Benchmark</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top">
+  <div class="wrap top-in">
+    <div>
+      <h1>Graph Coloring Benchmark</h1>
+      <div class="sub" id="graphSummary">4 greedy algorithms &middot; US county adjacency graph</div>
+    </div>
+    <div class="top-right">
+      <div class="machine" id="machine"></div>
+      <button class="btn ghost" id="themeBtn" type="button" aria-label="Toggle theme">Theme</button>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="card" id="runPanel">
+    <h2>Run benchmark</h2>
+    <form id="runForm" class="form">
+      <fieldset class="algs"><legend>Algorithms</legend><div id="algChecks"></div></fieldset>
+      <label>Implementation
+        <select id="impl"><option value="networkx">networkx</option><option value="local">local</option></select>
+      </label>
+      <label>Runs <input type="number" id="runs" min="1" max="50" value="5"></label>
+      <label>Warmup <input type="number" id="warmup" min="0" max="5" value="1"></label>
+      <label class="notes">Notes <input type="text" id="notes" maxlength="500" placeholder="optional"></label>
+      <button class="btn primary" id="runBtn" type="submit">Run</button>
+    </form>
+    <div id="progressBox" class="progress" hidden>
+      <div class="bar"><div id="barFill"></div></div>
+      <div class="pmeta"><span id="pAlg"></span><span id="pMsg"></span><span id="pTime"></span></div>
+    </div>
+    <div id="runError" class="error" role="alert" hidden></div>
+  </section>
+
+  <div id="empty" class="card empty" hidden>
+    <h3>No benchmark runs yet</h3>
+    <p>Choose algorithms above and press <b>Run</b>. A full 5-run benchmark takes about a minute.</p>
+  </div>
+
+  <section id="latestSec">
+    <div class="sec-h"><h2>Latest run</h2><span class="muted" id="latestMeta"></span></div>
+    <div class="kpis" id="kpis"></div>
+  </section>
+
+  <div class="toolbar card slim">
+    <label class="inline"><input type="checkbox" id="logToggle" checked> Log time axis</label>
+    <label class="inline">Impl filter
+      <select id="implFilter"><option value="all">all</option><option value="networkx">networkx</option><option value="local">local</option></select>
+    </label>
+    <div class="legend" id="legend"></div>
+  </div>
+  <div id="noChart" class="card note" hidden>Charts are unavailable (Chart.js could not load, probably offline). Tables below still work.</div>
+
+  <div class="grid2" id="chartsGrid">
+    <section class="card">
+      <h2>Variance within the latest run</h2>
+      <p class="muted small">Every timed sample per algorithm; bar marks the median.</p>
+      <div class="chart"><canvas id="stripChart"></canvas></div>
+    </section>
+    <section class="card">
+      <h2>Variance across runs</h2>
+      <p class="muted small">Median per run; shaded band is min&ndash;max within that run.</p>
+      <div class="chart"><canvas id="histChart"></canvas></div>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>Aggregate statistics (all history)</h2>
+    <div class="tablewrap"><table id="aggTable"></table></div>
+    <p class="muted small foot"><b>CV%</b> (coefficient of variation) = stdev / mean &times; 100 over all samples; it expresses spread relative to typical time, so fast and slow algorithms are comparable.
+      <b>Within-run</b> = mean of per-run stdevs (noise between repetitions). <b>Between-run</b> = stdev of per-run medians (drift across separate runs/processes). Color counts show e.g. <code>6&times;12, 7&times;3</code> = 6 colors in 12 runs, 7 in 3.</p>
+  </section>
+
+  <section class="card">
+    <div class="sec-h"><h2>History</h2><a class="btn ghost" href="/api/export.csv">Export CSV</a></div>
+    <div class="tablewrap"><table id="histTable"></table></div>
+  </section>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" onerror="window.__noChart=true"></script>
+<script src="app.js"></script>
+</body>
+</html>
