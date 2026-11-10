@@ -252,6 +252,8 @@ def main():
     parser.add_argument("--impl", choices=["networkx", "local"], default="networkx",
                         help="networkx's code or our copies in greedy_coloring/")
     parser.add_argument("--no-plot", action="store_true", help="skip drawing the graph")
+    parser.add_argument("--map", action="store_true",
+                        help="draw a colored county map instead of the dot graph")
     args = parser.parse_args()
 
     # import data from files and create the graph
@@ -274,7 +276,13 @@ def main():
     print("Coloring is valid: ", validate_coloring(G, node_color_label_dict))
     print(f"Elapsed time in seconds: {(end_time - start_time):.4f}")
 
-    if not args.no_plot:
+    if args.no_plot:
+        return
+    if args.map:
+        from visualize_map import draw_county_map       # needs numpy, downloads outlines once
+        n = num_colors(node_color_label_dict)
+        draw_county_map(node_color_label_dict, title=f"{args.strategy} ({args.impl}): {n} colors")
+    else:
         draw_graph(G, positions, node_color_label_dict)
 
 
